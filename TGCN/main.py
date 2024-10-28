@@ -12,7 +12,7 @@ import utils.logging
 
 DATA_PATHS = {
     "shenzhen": {"feat": "data/sz_speed.csv", "adj": "data/sz_adj.csv"},
-    "futian":{"feat":"data/福田中心路网流量矩阵.csv","adj":"data/福田中心邻接矩阵（无列名）.csv"},
+    "futian":{"feat":"data/futian_flow.csv","adj":"data/futian_adj.csv"},
     "losloop": {"feat": "data/los_speed.csv", "adj": "data/los_adj.csv"},
 }
 
