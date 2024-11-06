@@ -283,7 +283,6 @@ def calculate_global_min_max(train_loader, model):
         }
 
 
-# 定义最大最小归一化
 def normalize_with_global(score, global_min, global_max):
     normalized_score = (score - global_min) / (global_max - global_min + 1e-8)
     return torch.abs(normalized_score)
@@ -323,7 +322,7 @@ class ExpertModel(nn.Module):
 class GraphConvolution(nn.Module):
     def __init__(self, adj, corr, input_dim: int, output_dim: int, bias: float = 0.0):
         super(GraphConvolution, self).__init__()
-        self._num_gru_units = input_dim
+        self._input_dim = input_dim
         self._output_dim = output_dim
         self._bias_init_value = bias
         self.register_buffer(
@@ -331,7 +330,7 @@ class GraphConvolution(nn.Module):
         )
         self.register_buffer("corr", calculate_laplacian_with_self_loop(torch.FloatTensor(corr)))
         self.weights = nn.Parameter(
-            torch.FloatTensor(self._num_gru_units + 1, self._output_dim)
+            torch.FloatTensor(self._input_dim + 1, self._output_dim)
         )
         self.biases = nn.Parameter(torch.FloatTensor(self._output_dim))
         self.reset_parameters()
@@ -351,25 +350,25 @@ class GraphConvolution(nn.Module):
         hidden_state = hidden_state.reshape(
             (batch_size, num_nodes, self._num_gru_units)
         )
-        # [x, h] (batch_size, num_nodes, num_gru_units + 1)
+        # [x, h] (batch_size, num_nodes, _input_dim + 1)
         concatenation = torch.cat((inputs, hidden_state), dim=2)
-        # [x, h] (num_nodes, num_gru_units + 1, batch_size)
+        # [x, h] (num_nodes, input_dim + 1, batch_size)
         concatenation = concatenation.transpose(0, 1).transpose(1, 2)
-        # [x, h] (num_nodes, (num_gru_units + 1) * batch_size)
+        # [x, h] (num_nodes, (input_dim + 1) * batch_size)
         concatenation = concatenation.reshape(
-            (num_nodes, (self._num_gru_units + 1) * batch_size)
+            (num_nodes, (self.input_dim) * batch_size)
         )
-        # A[x, h] (num_nodes, (num_gru_units + 1) * batch_size)
+        # A[x, h] (num_nodes, (input_dim + 1) * batch_size)
         a_times_concat = combined_matrix @ concatenation
-        # A[x, h] (num_nodes, num_gru_units + 1, batch_size)
+        # A[x, h] (num_nodes, input_dim + 1, batch_size)
         a_times_concat = a_times_concat.reshape(
-            (num_nodes, self._num_gru_units + 1, batch_size)
+            (num_nodes, self._input_dim + 1, batch_size)
         )
-        # A[x, h] (batch_size, num_nodes, num_gru_units + 1)
+        # A[x, h] (batch_size, num_nodes, input_dim + 1)
         a_times_concat = a_times_concat.transpose(0, 2).transpose(1, 2)
-        # A[x, h] (batch_size * num_nodes, num_gru_units + 1)
+        # A[x, h] (batch_size * num_nodes, input_dim + 1)
         a_times_concat = a_times_concat.reshape(
-            (batch_size * num_nodes, self._num_gru_units + 1)
+            (batch_size * num_nodes, self._input_dim + 1)
         )
         # A[x, h]W + b (batch_size * num_nodes, output_dim)
         outputs = a_times_concat @ self.weights + self.biases
@@ -382,7 +381,7 @@ class GraphConvolution(nn.Module):
     @property
     def hyperparameters(self):
         return {
-            "num_gru_units": self._num_gru_units,
+            "input_dim": self._input_dim,
             "output_dim": self._output_dim,
             "bias_init_value": self._bias_init_value,
         }
@@ -454,21 +453,35 @@ class GMKAN(nn.Module):
         ])
         self.final_layer = nn.Linear(self._hidden_dim, 1)
 
-    def forward(self, inputs, global_min_max_values):
+    def forward(self, inputs, global_min_max_values, prediction_steps:int=3, training=True, current_epoch=1, total_epochs=200):
         batch_size, seq_len, num_nodes = inputs.shape
         assert self._input_dim == num_nodes
         hidden_state = torch.zeros(batch_size, num_nodes, self._hidden_dim).type_as(
             inputs
         )
-        output = None
+        initial_teacher_forcing_ratio = 1.0 
+        final_teacher_forcing_ratio = 0.0 
+        teacher_forcing_ratio = initial_teacher_forcing_ratio - (current_epoch / total_epochs) * (
+                    initial_teacher_forcing_ratio - final_teacher_forcing_ratio)
+        outputs = []
         for i in range(seq_len):
-            current_input = inputs[:, i, :]
+            for layer in self.tgcn_layers:
+                output, hidden_state = layer(inputs[:, i, :], hidden_state, global_min_max_values)
+        current_input = inputs[:,-1,:]
+        for step in range(prediction_steps):
             for layer in self.tgcn_layers:
                 output, hidden_state = layer(current_input, hidden_state, global_min_max_values)
             output = hidden_state.view(batch_size * num_nodes, self._hidden_dim)
             output = self.final_layer(output)
             output = output.view(batch_size, num_nodes)
-        return output
+            outputs.append(output.unsqueeze(1))
+            current_input = output
+            if training and random.random() < teacher_forcing_ratio:
+                current_input = inputs[:, step, :]  
+            else:
+                current_input = output
+        outputs = torch.cat(outputs, dim=1)
+        return outputs
 
 adj_path = 'E:\data\\futian_adj.csv'
 feat_path = 'E:\data\\futian_flow.csv'
@@ -478,7 +491,7 @@ adjacency_matrix = load_adjacency_matrix(adj_path)
 features = load_features(feat_path)
 corr_matrix = load_corr_matrix(corr_path)
 sequence_length = 12
-prediction_length = 1
+prediction_length = 3
 
 train_dataset, test_dataset, max_val, min_val = generate_torch_datasets(
     features,
@@ -486,7 +499,7 @@ train_dataset, test_dataset, max_val, min_val = generate_torch_datasets(
     pre_len=prediction_length,
     normalize=True
 )
-print("Max Value:", max_val, "Min Value:", min_val)
+# print("Max Value:", max_val, "Min Value:", min_val)
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
@@ -543,7 +556,6 @@ def evaluate(model, test_loader, max_val, min_val, global_min_max_values):
 
 mse_values, mae_values, r2_values, smape_values, mapes,accuracys, exp_vars = [], [], [], [], [], [],[]
 
-# 模型训练
 for epoch in range(200):
     for inputs, targets in train_loader:
         inputs = inputs.to(device)
