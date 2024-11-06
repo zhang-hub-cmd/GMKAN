@@ -36,7 +36,6 @@ class KANLinear(torch.nn.Module):
             .contiguous()
         )
         self.register_buffer("grid", grid)
-        # 初始化基础和样条权重
         self.base_weight = torch.nn.Parameter(torch.Tensor(out_features, in_features))
         self.spline_weight = torch.nn.Parameter(
             torch.Tensor(out_features, in_features, grid_size + spline_order)
@@ -56,9 +55,9 @@ class KANLinear(torch.nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # 参数初始化
+ 
         torch.nn.init.kaiming_uniform_(self.base_weight, a=math.sqrt(5) * self.scale_base)
-        with torch.no_grad():   # 生成随机噪声，并使用 curve2coeff 方法将噪声转换为样条系数
+        with torch.no_grad():   
             noise = (
                 (
                     torch.rand(self.grid_size + 1, self.in_features, self.out_features)
@@ -80,7 +79,6 @@ class KANLinear(torch.nn.Module):
 
     def b_splines(self, x: torch.Tensor):
         """
-        计算给定输入张量的b样条基
         Args:
             x (torch.Tensor): Input tensor of shape (batch_size, in_features).
         Returns:
