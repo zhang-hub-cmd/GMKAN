@@ -1,2 +1,2 @@
 # GMKAN
-我的模型
+An advanced model for traffic prediction
